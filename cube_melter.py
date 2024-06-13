@@ -30,7 +30,7 @@ from tkinter import (Tk, Button, LabelFrame, Label, Text, Entry, BooleanVar, Int
 
 from spectracan.spectra_listener import SpectraListener
 
-from AddressDictionary import AddressDictionary, SupplyLUN
+from AddressDictionary import AddressDictionary, PMM_LUNS
 
 LOG_NAME = 'CUBEMELTER.log'
 VERSION = '1.0.0'
@@ -342,7 +342,7 @@ class CUBEMELTER:
             lbl_supply_num = Label(frame_supply, text='Supply{}'.format(supply_num))
             lbl_supply_num.grid(row=3+supply_num, column=0)
 
-            supply_lun = SupplyLUN["Supply{}".format(supply_num)]
+            supply_lun = PMM_LUNS["Supply{}".format(supply_num)]
 
             # Get Button
             btn_get_supply_env = Button(frame_supply, text='GET',

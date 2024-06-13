@@ -1,5 +1,8 @@
 
 AddressDictionary = {
+    # PMM
+    "PMM": 0x78,
+
     # DBA 1
     "DBA1_DPM1": 0x00,
     "DBA1_DPM2": 0x01,
@@ -77,8 +80,9 @@ AddressDictionary = {
     "DBA4_DTL8": 0xB7
 }
 
-SupplyLUN = {
+PMM_LUNS = {
     # Supply's and their LUNs for the GetEnviornment
+    "PMM": 0x00,
     "Supply0": 0x01,
     "Supply1": 0x02,
     "Supply2": 0x03
