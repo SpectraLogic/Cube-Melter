@@ -306,6 +306,10 @@ class CUBEMELTER:
         self.btn_dpm_env = Button(frame_scan,text='Disable All DPMs', height=3, width=20, command=self.disable_dpms)
         self.btn_dpm_env.grid(row=6, column=2, rowspan=2)
 
+        # Get PMM ENV Button
+        self.btn_pmm_env = Button(frame_scan,text='Get PMM ENV', height=3, width=20, command=self.click_get_pmm_env)
+        self.btn_pmm_env.grid(row=10, column=0, rowspan=2)
+
     def create_supply_frame(self, root):
         """Creates the Supply frame where Supply Environments are displayed"""
         # Scan Frame
@@ -543,6 +547,36 @@ class CUBEMELTER:
         self.log_to_output("Waiting for responses...")
         # At this point the listener should still be going for a bit, cleanup happens in self.stop_listener callback
 
+    def click_get_pmm_env(self):
+        self.log_to_output("CLick get PMM")
+
+        command = LCFCmd_GetEnvironment.build_command()
+        try:
+            response_bytes = MsgSender.send_command_sync(channel_num=CNUM_CANR,
+                                                         src=SRC_ADDRESS,
+                                                         dest=PMM_ADDRESS,
+                                                         command=command,
+                                                         timeout=2)
+        except Exception as err:
+            self.log_to_output("Failed to get environment:" + str(err))
+
+        self.log_to_output(str(response_bytes))
+        version = response_bytes[4]
+        libraryStatus = response_bytes[5]
+        fruStatus = response_bytes[6]
+        # faults are 4 bytes
+        faults = (response_bytes[10] << 24) + (response_bytes[9] << 16) + (response_bytes[8] << 8) + response_bytes[7]
+        ledMode = response_bytes[11]
+        fanSpeed = response_bytes[12]
+        cpuTemp = response_bytes[13]
+        boostTemp = response_bytes[14]
+        pbpTemp1 = response_bytes[15]
+        pbpTemp2 = response_bytes[16]
+        present_supplies = response_bytes[17]
+        volt_24 = response_bytes
+
+        self.log_to_output(f'version: {version}, libraryStatus: {libraryStatus}, present_supplies: {present_supplies}')
+
     def get_dpm_env(self, dpm_address):
         self.log_to_output("Get DPM Env:" + str(hex(dpm_address)))
 
@@ -555,11 +589,26 @@ class CUBEMELTER:
                                                          timeout=2)
         except Exception as err:
             self.log_to_output("Failed to get environment:" + str(err))
-        rsp = LCFCmd_GetEnvironment.parse_response(response_bytes)
-        dpm_volts = f'{rsp["voltage"]}'
-        dpm_current = f'{rsp["current"]}'
-        self.dict_dpm_voltage[dpm_address].set((self.round_up(float(dpm_volts), 4)))
-        self.dict_dpm_current[dpm_address].set((self.round_up(float(dpm_current), 4)))
+
+        self.log_to_output(str(response_bytes))
+        version = response_bytes[4]
+        fruStatus = response_bytes[5]
+        faults = response_bytes[6]
+        status = response_bytes[7]
+        led0 = response_bytes[8]
+        led1 = response_bytes[9]
+        hotswap = response_bytes[10]
+        fanSpeed = response_bytes[11]
+        # voltage is response_bytes 12-13
+        voltage = (response_bytes[12] << 8) + response_bytes[13]
+        # current is response_bytes 14-15
+        current = (response_bytes[14] << 8) + response_bytes[15]
+        pcbRevision = response_bytes[16]
+
+        self.log_to_output(f'Version: {version}, FRU Status: {fruStatus}, Faults: {faults}, Status: {status}, LED0: {led0}, LED1: {led1}, Hotswap: {hotswap}, Fan Speed: {fanSpeed}, Voltage: {voltage}, Current: {current}, PCB Revision: {pcbRevision}')
+
+        self.dict_dpm_voltage[dpm_address].set(str(voltage))
+        self.dict_dpm_current[dpm_address].set(str(current))
 
     def get_dtl_env(self, dtl_address):
         self.log_to_output("Get DTL Env:" + str(hex(dtl_address)))
@@ -611,16 +660,17 @@ class CUBEMELTER:
         
     def get_dtl_env_cont(self):
         dtl_addresses = [
-            0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
-            0x18,0x19,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F,
-            0x28,0x29,0x2A,0x2B,0x2C,0x2D,0x2E,0x2F,
-            0x38,0x39,0x3A,0x3B,0x3C,0x3D,0x3E,0x3F
+            0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+            0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+            0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+            0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7
             ]
 
+        self.log_to_output("Getting all DTL Environments")
         for i in self.dict_present_cbs:
             t_f = self.dict_present_cbs[i].get()
             if t_f is True and i in dtl_addresses:
-                time.sleep(0.01)
+                time.sleep(0.02)
                 self.get_dtl_env(i)
 
     def get_dpm_env_cont(self):
@@ -636,7 +686,6 @@ class CUBEMELTER:
             if t_f is True and i in dpm_addresses:
                 time.sleep(0.02)
                 self.get_dpm_env(i)
-        # self.log_to_output("total power is: " + str(self.get_total_dpm_power()))
         self.total_dpm_power.set(self.get_total_dpm_power())
 
     def get_total_dpm_power(self):
