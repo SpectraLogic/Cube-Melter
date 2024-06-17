@@ -34,7 +34,6 @@ def main():
     # Run the program
 
     try:
-
         # SETUP CAN R AND CAN T
         if not setup_can_channels(logger):
             return
@@ -76,6 +75,8 @@ def main():
         # GRAB PMM/DPM/DTL ENVIORNMENTS EVERY 3 seconds for 30 seconds
 
         # TURN OFF ALL DTLS and DPMS
+
+        # ENABLE PMM POLLING
 
     except Exception as err:  # pylint: disable=broad-except
         logger.exception(err)
