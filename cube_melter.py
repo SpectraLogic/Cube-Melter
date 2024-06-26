@@ -1,4 +1,3 @@
-
 ##
 # Module with the CUBEMELTER Tool
 
@@ -7,30 +6,17 @@ import os
 import re
 from datetime import datetime
 
-# linters might not like these, but pyinstaller needs 'em
-import pycan.interfaces.kvaser          # noqa # pylint: disable=unused-import
-import pycan.interfaces.kvaser.canlib   # noqa # pylint: disable=unused-import
-import pycan.interfaces.usb2can         # noqa # pylint: disable=unused-import
-
 import time
-import math
 from logging.handlers import RotatingFileHandler
 
-from spectracan import ChannelManager, MsgSender
-from spectracan.can_commands import (LCFCmd_HeartBeat, PMM_DeviceEnableCmd, PMM_DeviceDisableCmd,
-                                     LCFCmd_GetEnvironment, CanCommand)
-
-from spectracan.error import CanTimeoutError, ChannelNotSetUpError
 from spectracan.can_enums import LcfAddress
-
-from pycan.interfaces.kvaser.canlib import CANLIBError
 
 from tkinter import (Tk, Button, LabelFrame, Label, Text, Entry, BooleanVar, IntVar, END, Scrollbar, ttk,
                      font, Checkbutton, DoubleVar)
 
-from spectracan.spectra_listener import SpectraListener
-
 from AddressDictionary import AddressDictionary, PMM_LUNS
+
+from backend import CanBackend
 
 LOG_NAME = 'CUBEMELTER.log'
 VERSION = '1.0.0'
@@ -44,15 +30,13 @@ PMM_ADDRESS = LcfAddress.PCM_PMM_MAIN.value
 # Time in seconds to wait for heartbeat responses during the scan
 LISTENING_TIME = 3
 
-# status byte of CAN commands
-GOOD_STATUS = '0'
-
 DTL_MAX_TEMP = 90
+
 
 class CUBEMELTER:
     """Class that implements the CUBEMELTER tool"""
 
-    def __init__(self, root):
+    def __init__(self, root, backend):
         """Initializes a CUMEMELTER object
 
         Args:
@@ -80,7 +64,7 @@ class CUBEMELTER:
         self.number_of_responses = IntVar()  # Number of responses received
         self.lbox_output = None
         self.btn_scan = None
-        # TODO: Change relavant dicts to use DoubleVars
+        # TODO: Change relevant dicts to use DoubleVars
         self.dict_present_cbs = dict()  # {int address : BooleanVar present} used to update the checkboxes
         self.dict_12v_fet_set = dict()  # {int address : IntVar fets_to_set}
         self.dict_5v_fet_set = dict()   # {int address : IntVar fets_to_set}
@@ -95,8 +79,6 @@ class CUBEMELTER:
         self.dict_supply_fspeed = dict()    # {int supplyLUN : IntVar supply_fspeed}
         self.dict_supply_ac = dict()        # {int supplyLUN : IntVar supply_ac}
         self.dict_supply_dc = dict()        # {int supplyLUN : IntVar supply_dc}
-        self.dtl_cont_stop = False
-        self.dpm_cont_stop = False
 
         # Create the GUI using the tkinter grid layout manager
 
@@ -108,27 +90,16 @@ class CUBEMELTER:
         self.create_output_frame(root)
 
         # Set up channel manager
-        self.can_ready = self.setup_can_channels()
+        self.can_backend = backend
+        self.scan_done = BooleanVar(value=False)
 
-    def setup_can_channels(self):
-        """Try to set up kvaser return true if setup successfully"""
-        try:
-            self.logger.info("Trying to setup CANR...")
-            ChannelManager.setup_channel(channel_num=CNUM_CANR, device_type='kvaser', bit_rate=400_000)
-            self.log_to_output("Kvaser is ready on CANR")
-        except Exception as ex:
-            self.logger.info("Unable to set up CANR. Exception: " + str(ex))
-            return False
-
-        try:
-            self.logger.info("Trying to setup CANT...")
-            ChannelManager.setup_channel(channel_num=CNUM_CANT, device_type='kvaser', bit_rate=800_000)
-            self.log_to_output("Kvaser is ready on CANT")
-        except Exception as ex:
-            self.logger.info("Unable to set up CANT. Exception: " + str(ex))
-            return False
-
-        return True
+        # Set up the CAN channels
+        self.can_ready = False
+        self.can_ready = self.can_backend.setup_can_channel(CNUM_CANR, 400_000)
+        self.can_ready = self.can_backend.setup_can_channel(CNUM_CANT, 800_000)
+        if not self.can_ready:
+            self.log_to_output("CAN is not setup, plug in a CAN device and restart the app")
+            return
 
     def create_dba_frame(self, root, dba_num):
         """Creates each DBA Frame"""
@@ -291,19 +262,21 @@ class CUBEMELTER:
         self.btn_scan.grid(row=0, column=2, rowspan=2)
         
         # Get All All DTL Environment Button
-        self.btn_dtl_env = Button(frame_scan,text='Get All DTL Envs', height=3, width=20, command=self.get_dtl_env_cont)
+        self.btn_dtl_env = Button(frame_scan,text='Get All DTL Envs',
+                                  height=3, width=20, command=self.click_get_all_dtl_env)
         self.btn_dtl_env.grid(row=6, column=0, rowspan=2)
 
         # Enable All DPM Button
-        self.btn_dtl_env = Button(frame_scan,text='Enable All DPMs', height=3, width=20, command=self.enable_dpms)
+        self.btn_dtl_env = Button(frame_scan, text='Enable All DPMs', height=3, width=20, command=self.click_enable_dpms)
         self.btn_dtl_env.grid(row=2, column=2, rowspan=2)
 
         # Get All DPM Environment Button
-        self.btn_dpm_env = Button(frame_scan,text='Get All DPM Envs', height=3, width=20, command=self.get_dpm_env_cont)
+        self.btn_dpm_env = Button(frame_scan,text='Get All DPM Envs',
+                                  height=3, width=20, command=self.click_get_all_dpm_env)
         self.btn_dpm_env.grid(row=2, column=0, rowspan=2)
 
         # Disable All DPM BUtton
-        self.btn_dpm_env = Button(frame_scan,text='Disable All DPMs', height=3, width=20, command=self.disable_dpms)
+        self.btn_dpm_env = Button(frame_scan, text='Disable All DPMs', height=3, width=20, command=self.click_disable_dpms)
         self.btn_dpm_env.grid(row=6, column=2, rowspan=2)
 
         # Get PMM ENV Button
@@ -403,16 +376,6 @@ class CUBEMELTER:
             ent_supply_dc.grid(row=3 + supply_num, column=8)
             self.dict_supply_dc.update({supply_lun: supply_dc})
 
-        # Total DPM Power Label
-        lbl_total_dpm_power = Label(frame_supply, text='Total DPM Power:')
-        lbl_total_dpm_power.grid(row=7, column=1)
-
-        # Total DPM Power Box
-        self.total_dpm_power = DoubleVar()
-        ent_total_dpm_power = Entry(frame_supply, background='white', width=9, textvariable=self.total_dpm_power)
-        ent_total_dpm_power.configure(state='disabled')
-        ent_total_dpm_power.grid(row =7,column=2)
-
         # All 5V Label
         lbl_all_twelve = Label(frame_supply, text='All 5:')
         lbl_all_twelve.grid(row=8, column=1)
@@ -452,14 +415,6 @@ class CUBEMELTER:
         vsb.grid(row=0, column=1, sticky='ns')
         self.lbox_output.config(yscrollcommand=vsb.set)
         vsb.config(command=self.lbox_output.yview)
-
-    def send_heartbeat(self, address):
-        command = LCFCmd_HeartBeat.build_command()
-
-        MsgSender.send_command_no_response(channel_num=CNUM_CANT,
-                                           src=SRC_ADDRESS,
-                                           dest=address,
-                                           command=command)
 
     def frame_handler(self, frame):
         """Callback given to SpectraListener.
@@ -507,146 +462,22 @@ class CUBEMELTER:
 
         # TODO: Clear the rest of the GUI
 
-        # Set up a SpectraListener with custom frame_callback and timeout_callback
-        self.listener = SpectraListener(CNUM_CANT)
-        # TODO: LCR seems to be taking ~3 seconds to respond
-        # TODO: test response times of other devices / set timeout accordingly
-        self.listener.start_frame_consumer(frame_callback=self.frame_handler,
-                                           timeout=LISTENING_TIME,
-                                           timeout_callback=self.stop_listener)
-        self.listener.start_timer.set()  # start the timer
-
-        # Scan all the possible DTL/DPM addresses
-        # TODO: also scan and display devices that share a can address using the LUN (icecube pmms + supplies for ex.)
-        for device, address in AddressDictionary.items():
-            self.logger.info("Pinging: " + hex(address) + " " + device)
-            try:
-                self.send_heartbeat(address)
-            except CanTimeoutError:
-                # Nothing plugged in with usb2can
-                self.log_to_output("Error: Check the CAN bus")
-                self.stop_listener()
-                return
-            except CANLIBError:
-                # Nothing plugged in with kvaser
-                self.log_to_output("Error: Check the CAN bus")
-                self.stop_listener()
-                return
-            except ChannelNotSetUpError as chan:
-                self.log_to_output(str(chan))
-                self.stop_listener()
-                return
-            except Exception as e:
-                self.log_to_output("Exception: " + str(e))
-                self.stop_listener()
-                return
-            self.number_of_addresses.set(self.number_of_addresses.get() + 1)
-            self.box_resp_rec.update()  # force update
-            # time.sleep(0.05)
-
-        self.log_to_output("Waiting for responses...")
-        # At this point the listener should still be going for a bit, cleanup happens in self.stop_listener callback
-
     def click_get_pmm_env(self):
         self.log_to_output("CLick get PMM")
-
-        command = LCFCmd_GetEnvironment.build_command()
-        try:
-            response_bytes = MsgSender.send_command_sync(channel_num=CNUM_CANR,
-                                                         src=SRC_ADDRESS,
-                                                         dest=PMM_ADDRESS,
-                                                         command=command,
-                                                         timeout=2)
-        except Exception as err:
-            self.log_to_output("Failed to get environment:" + str(err))
-
-        self.log_to_output(str(response_bytes))
-        version = response_bytes[4]
-        libraryStatus = response_bytes[5]
-        fruStatus = response_bytes[6]
-        # faults are 4 bytes
-        faults = (response_bytes[10] << 24) + (response_bytes[9] << 16) + (response_bytes[8] << 8) + response_bytes[7]
-        ledMode = response_bytes[11]
-        fanSpeed = response_bytes[12]
-        cpuTemp = response_bytes[13]
-        boostTemp = response_bytes[14]
-        pbpTemp1 = response_bytes[15]
-        pbpTemp2 = response_bytes[16]
-        present_supplies = response_bytes[17]
-        volt_24 = response_bytes
-
-        self.log_to_output(f'version: {version}, libraryStatus: {libraryStatus}, present_supplies: {present_supplies}')
 
     def get_dpm_env(self, dpm_address):
         self.log_to_output("Get DPM Env:" + str(hex(dpm_address)))
 
-        command = LCFCmd_GetEnvironment.build_command()
-        try:
-            response_bytes = MsgSender.send_command_sync(channel_num=CNUM_CANT,
-                                                         src=SRC_ADDRESS,
-                                                         dest=dpm_address,
-                                                         command=command,
-                                                         timeout=2)
-        except Exception as err:
-            self.log_to_output("Failed to get environment:" + str(err))
-
-        self.log_to_output(str(response_bytes))
-        version = response_bytes[4]
-        fruStatus = response_bytes[5]
-        faults = response_bytes[6]
-        status = response_bytes[7]
-        led0 = response_bytes[8]
-        led1 = response_bytes[9]
-        hotswap = response_bytes[10]
-        fanSpeed = response_bytes[11]
-        # voltage is response_bytes 12-13
-        voltage = (response_bytes[12] << 8) + response_bytes[13]
-        # current is response_bytes 14-15
-        current = (response_bytes[14] << 8) + response_bytes[15]
-        pcbRevision = response_bytes[16]
-
-        self.log_to_output(f'Version: {version}, FRU Status: {fruStatus}, Faults: {faults}, Status: {status}, LED0: {led0}, LED1: {led1}, Hotswap: {hotswap}, Fan Speed: {fanSpeed}, Voltage: {voltage}, Current: {current}, PCB Revision: {pcbRevision}')
-
-        self.dict_dpm_voltage[dpm_address].set(str(voltage))
-        self.dict_dpm_current[dpm_address].set(str(current))
-
     def get_dtl_env(self, dtl_address):
         self.log_to_output("Get DTL Env:" + str(hex(dtl_address)))
 
-        command = LCFCmd_GetEnvironment.build_command()
-        try:
-            response_bytes = MsgSender.send_command_sync(channel_num=CNUM_CANT,
-                                                         src=SRC_ADDRESS,
-                                                         dest=dtl_address,
-                                                         command=command,
-                                                         timeout=2)
-        except Exception as err:
-            self.log_to_output("Failed to get environment:" + str(err))
-        # Parse response_bytes directly as dtl env is not part of spectracan
-        rsp_array = list(response_bytes)
-        dtl_temp = rsp_array[8]
-        dtl_cpu_temp = rsp_array[9]
-
-        command = ArbitraryCommand.build_command(payload=[0x6f,0x35,0x01])
-        try:
-        
-            response_bytes = MsgSender.send_command_sync(channel_num=CNUM_CANT,
-                                           src=SRC_ADDRESS,
-                                           dest=dtl_address,
-                                           command=command)
-        except Exception as err:
-            self.log_to_output("Failed to get fets:" + str(err))
-
-        rsp_array = list(response_bytes)
-        fets_enabled_five = rsp_array[1]
-        fets_enabled_twelve = rsp_array[2]
-        self.dict_dtl_temp[dtl_address].set(dtl_temp)
+        """self.dict_dtl_temp[dtl_address].set(dtl_temp)
         self.dict_dtl_cpu_temp[dtl_address].set(dtl_cpu_temp)
         self.dict_5v_fet_set[dtl_address].set(fets_enabled_five)
-        self.dict_12v_fet_set[dtl_address].set(fets_enabled_twelve)
+        self.dict_12v_fet_set[dtl_address].set(fets_enabled_twelve)"""
 
         # Adds Temperature Control for Fet Shut off
-        if dtl_temp > DTL_MAX_TEMP:
+        """if dtl_temp > DTL_MAX_TEMP:
             fets_to_set_5 = 0
             fets_to_set_12 = 0
             output_string = ("Set DTL:" + str(hex(dtl_address)) + " {#5VFets:" +
@@ -656,9 +487,10 @@ class CUBEMELTER:
             MsgSender.send_command_no_response(channel_num=CNUM_CANT,
                                            src=SRC_ADDRESS,
                                            dest=dtl_address,
-                                           command=command)
+                                           command=command)"""
         
-    def get_dtl_env_cont(self):
+    def click_get_all_dtl_env(self):
+        self.log_to_output("Getting all DTL Environments")
         dtl_addresses = [
             0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
             0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
@@ -666,14 +498,14 @@ class CUBEMELTER:
             0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7
             ]
 
-        self.log_to_output("Getting all DTL Environments")
         for i in self.dict_present_cbs:
             t_f = self.dict_present_cbs[i].get()
             if t_f is True and i in dtl_addresses:
                 time.sleep(0.02)
                 self.get_dtl_env(i)
 
-    def get_dpm_env_cont(self):
+    def click_get_all_dpm_env(self):
+        self.log_to_output("Getting all DPM Environments")
         dpm_addresses = [
             0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
             0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
@@ -686,15 +518,8 @@ class CUBEMELTER:
             if t_f is True and i in dpm_addresses:
                 time.sleep(0.02)
                 self.get_dpm_env(i)
-        self.total_dpm_power.set(self.get_total_dpm_power())
 
-    def get_total_dpm_power(self):
-        total_current = 0.0
-        for value in self.dict_dpm_current.values():
-            total_current += value.get()
-        return total_current * 12
-
-    def disable_dpms(self):
+    def click_disable_dpms(self):
         dpm_addresses = [
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
             0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
@@ -707,7 +532,7 @@ class CUBEMELTER:
                 time.sleep(0.01)
                 self.set_dpm_disable(i)
     
-    def enable_dpms(self):
+    def click_enable_dpms(self):
         dpm_addresses = [
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
             0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
@@ -723,42 +548,15 @@ class CUBEMELTER:
     def get_supply_env(self, supply_lun):
         self.log_to_output("Get Supply Env, LUN: " + str(hex(supply_lun)))
 
-        command = LCFCmd_GetEnvironment.build_command(lun=supply_lun)
-        try:
-            response_bytes = MsgSender.send_command_sync(channel_num=CNUM_CANR,
-                                                         src=SRC_ADDRESS,
-                                                         dest=PMM_ADDRESS,
-                                                         command=command,
-                                                         timeout=2)
-        except Exception as err:
-            self.log_to_output("Failed to get environment:" + str(err))
-        rsp = LCFCmd_GetEnvironment.parse_response(response_bytes)
-        temp = response_bytes[7]
-        self.log_to_output("Response is :" + str(response_bytes))
-        self.log_to_output(f'temp: {temp}')
-        supply_volts = f'{rsp["voltage"]}'
-        supply_current = f'{rsp["current"]}'
-        self.dict_supply_voltage[supply_lun].set(self.round_up(float(supply_volts), 2))
+        """self.dict_supply_voltage[supply_lun].set(self.round_up(float(supply_volts), 2))
         # self.dict_supply_current[supply_lun].set(self.round_up(float(supply_current), 2))
-        self.dict_supply_current[supply_lun].set(float(supply_current))
+        self.dict_supply_current[supply_lun].set(float(supply_current))"""
 
     def set_dpm_enable(self, dpm_address):
         self.log_to_output("Enable DPM:" + str(hex(dpm_address)))
 
-        command = PMM_DeviceEnableCmd.build_command(sub_module=0x00)
-        MsgSender.send_command_no_response(channel_num=CNUM_CANT,
-                                           src=SRC_ADDRESS,
-                                           dest=dpm_address,
-                                           command=command)
-
     def set_dpm_disable(self, dpm_address):
         self.log_to_output("Disable DPM:" + str(hex(dpm_address)))
-
-        command = PMM_DeviceDisableCmd.build_command(sub_module=0x00)
-        MsgSender.send_command_no_response(channel_num=CNUM_CANT,
-                                           src=SRC_ADDRESS,
-                                           dest=dpm_address,
-                                           command=command)
 
     def set_dtl_load(self, dtl_address):
         fets_to_set_5 = self.dict_5v_fet_set[dtl_address].get()
@@ -768,13 +566,6 @@ class CUBEMELTER:
 
         self.log_to_output(output_string)
 
-        command = ArbitraryCommand.build_command(payload=[0x6f, 0x35, 0x02, fets_to_set_5, fets_to_set_12])
-        MsgSender.send_command_no_response(channel_num=CNUM_CANT,
-                                           src=SRC_ADDRESS,
-                                           dest=dtl_address,
-                                           command=command)
-
-    # TODO: use optional paramters instead of 2 separate functions
     def set_dtl_load_spec(self, dtl_address, fets_5, fets_12):
         fets_to_set_5 = fets_5
         fets_to_set_12 = fets_12
@@ -782,12 +573,6 @@ class CUBEMELTER:
                          str(fets_to_set_5) + ", #12VFets:" + str(fets_to_set_12) + "}")
 
         self.log_to_output(output_string)
-
-        command = ArbitraryCommand.build_command(payload=[0x6f, 0x35, 0x02, fets_to_set_5, fets_to_set_12])
-        MsgSender.send_command_no_response(channel_num=CNUM_CANT,
-                                           src=SRC_ADDRESS,
-                                           dest=dtl_address,
-                                           command=command)
 
     def set_all_fets(self):
         self.log_to_output("Setting all 5V Fets to:" + str(self.all_fets_five.get())
@@ -816,16 +601,6 @@ class CUBEMELTER:
         self.lbox_output.see(END)
         self.lbox_output.update()
 
-    def round_up(self, n, decimals=0):
-        multiplier = 10**decimals
-        return math.ceil(n * multiplier) / multiplier
-
-
-class ArbitraryCommand(CanCommand):
-    @classmethod
-    def build_command(cls, *, payload, ack=False):
-        return cls._start_command(payload[0], ack) + payload[1:]
-
 
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
@@ -851,17 +626,18 @@ def main():
     logger = logging.getLogger(__name__)
 
     logger.info('Starting the CUBEMELTER tool')
+    can_backend = CanBackend(logger)
     # Run the program
     try:
         root = Tk()
-        CUBEMELTER(root)
+        CUBEMELTER(root, can_backend)
         root.mainloop()
     except Exception as err:  # pylint: disable=broad-except
         logger.exception(err)
     finally:
         logger.info('Closing the program')
         logger.info('Shutting down Channel(s)')
-        ChannelManager.shutdown_channels()
+        can_backend.shutdown()
         logging.shutdown()
 
 
