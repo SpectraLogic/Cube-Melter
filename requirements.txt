@@ -1,3 +1,3 @@
 pyinstaller==6.1.0
-pythoncan==3.3.3
-spectracan==2.6.1
+pythoncan==3.3.4
+spectracan==3.0.0
