@@ -1,6 +1,7 @@
 from spectracan import ChannelManager, MsgSender
-from spectracan.can_commands import LCFCmd_HeartBeat, LCFCmd_GetFirmwareVersion, LCFCmd_GetManufInfo, \
-    LCFCmd_SetManufInfo, LCFCmd_GetEnvironment, LCFCmd_GetEEPromData, LCFCmd_SetEEPromData
+from spectracan.can_commands import (LCFCmd_HeartBeat, LCFCmd_GetFirmwareVersion, LCFCmd_GetManufInfo,
+    LCFCmd_SetManufInfo, LCFCmd_GetEnvironment, LCFCmd_GetEEPromData, LCFCmd_SetEEPromData, DTL_SetLoadFetCmd,
+                                     DTL_GetLoadFetCmd, DTL_GetMACLinkCmd)
 
 from spectracan.error import CanTimeoutError, ChannelNotSetUpError
 from spectracan.can_enums import LcfAddress
@@ -106,8 +107,22 @@ class CanBackend:
         except Exception as err:
             self.logger.info("ERROR: Failed to get environment: " + str(err))
             return
-        self.logger.info(response_bytes)
         return LCFCmd_GetEnvironment.parse_response(response_bytes)
+
+    def get_dtl_fets(self, channel, address):
+        command = DTL_GetLoadFetCmd.build_command()
+
+        try:
+            response_bytes = MsgSender.send_command_sync(channel_num=channel,
+                                                         src=SRC_ADDRESS,
+                                                         dest=address,
+                                                         command=command,
+                                                         timeout=2)
+        except Exception as err:
+            self.logger.info("ERROR: Failed to get DTL FETs: " + str(err))
+            return
+        return DTL_GetLoadFetCmd.parse_response(response_bytes)
+
 
     def shutdown(self):
         ChannelManager.shutdown_channels()

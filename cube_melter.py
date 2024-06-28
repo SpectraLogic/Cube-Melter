@@ -65,12 +65,12 @@ class CUBEMELTER:
         self.lbox_output = None
         self.btn_scan = None
         # TODO: Change relevant dicts to use DoubleVars
-        self.dict_present_cbs = dict()  # {int address : BooleanVar present} used to update the checkboxes
-        self.dict_12v_fet_set = dict()  # {int address : IntVar fets_to_set}
-        self.dict_5v_fet_set = dict()   # {int address : IntVar fets_to_set}
-        self.dict_dpm_voltage = dict()  # {int address : IntVar dpm_voltage}
-        self.dict_dpm_current = dict()  # {int address : DoubleVar dpm_current}
-        self.dict_dtl_temp = dict()     # {int address : IntVar dtl_temp}
+        self.dict_present_cbs = dict()      # {int address : BooleanVar present} used to update the checkboxes
+        self.dict_12v_fet_set = dict()      # {int address : IntVar fets_to_set}
+        self.dict_5v_fet_set = dict()       # {int address : IntVar fets_to_set}
+        self.dict_dpm_voltage = dict()      # {int address : DoubleVar dpm_voltage}
+        self.dict_dpm_current = dict()      # {int address : DoubleVar dpm_current}
+        self.dict_dtl_sensor_temp = dict()  # {int address : IntVar dtl_temp}
         self.dict_dtl_cpu_temp = dict()     # {int address : IntVar dtl_temp}
         self.dict_supply_status = dict()    # {int supplyLUN : IntVar supply_status}
         self.dict_supply_temp = dict()      # {int supplyLUN : IntVar supply_temp}
@@ -165,7 +165,7 @@ class CUBEMELTER:
             btn_get_dpm.grid(row=i, column=3)
 
             # DPM Voltage Box
-            dpm_volts = IntVar()
+            dpm_volts = DoubleVar()
             ent_dpm_volts = Entry(self.frame_dba, background='white', width=5, textvariable=dpm_volts)
             ent_dpm_volts.configure(state='disabled')
             ent_dpm_volts.grid(row=i, column=4)
@@ -197,7 +197,7 @@ class CUBEMELTER:
             ent_dtl_temp = Entry(self.frame_dba, background='white', width=4, textvariable=dtl_temp)
             ent_dtl_temp.configure(state='disabled')
             ent_dtl_temp.grid(row=i, column=8)
-            self.dict_dtl_temp.update({dtl_address: dtl_temp})
+            self.dict_dtl_sensor_temp.update({dtl_address: dtl_temp})
 
             # 5VFetSetBox
             set5_var = IntVar()
@@ -468,13 +468,23 @@ class CUBEMELTER:
     def get_dpm_env(self, dpm_address):
         self.log_to_output("Get DPM Env:" + str(hex(dpm_address)))
 
+        dpm_env = self.can_backend.get_environment(CNUM_CANT, dpm_address)
+        self.log_to_output(str(dpm_env))
+        self.dict_dpm_voltage[dpm_address].set(dpm_env['twelve_volt'])
+        self.dict_dpm_current[dpm_address].set(dpm_env['current'])
+
     def get_dtl_env(self, dtl_address):
         self.log_to_output("Get DTL Env:" + str(hex(dtl_address)))
 
-        """self.dict_dtl_temp[dtl_address].set(dtl_temp)
-        self.dict_dtl_cpu_temp[dtl_address].set(dtl_cpu_temp)
-        self.dict_5v_fet_set[dtl_address].set(fets_enabled_five)
-        self.dict_12v_fet_set[dtl_address].set(fets_enabled_twelve)"""
+        dtl_env = self.can_backend.get_environment(CNUM_CANT, dtl_address)
+        self.log_to_output(str(dtl_env))
+        self.dict_dtl_sensor_temp[dtl_address].set(dtl_env['sensor_temperature'])
+        self.dict_dtl_cpu_temp[dtl_address].set(dtl_env['cpu_temperature'])
+
+        dtl_fets = self.can_backend.get_dtl_fets(CNUM_CANT, dtl_address)
+        self.log_to_output(str(dtl_fets))
+        self.dict_5v_fet_set[dtl_address].set(dtl_fets['num_enabled_fets_5v'])
+        self.dict_12v_fet_set[dtl_address].set(dtl_fets['num_enabled_fets_12v'])
 
         # Adds Temperature Control for Fet Shut off
         """if dtl_temp > DTL_MAX_TEMP:
