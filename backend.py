@@ -1,10 +1,11 @@
 from spectracan import ChannelManager, MsgSender
-from spectracan.can_commands import (LCFCmd_HeartBeat, LCFCmd_GetFirmwareVersion, LCFCmd_GetManufInfo,
-    LCFCmd_SetManufInfo, LCFCmd_GetEnvironment, LCFCmd_GetEEPromData, LCFCmd_SetEEPromData, DTL_SetLoadFetCmd,
-                                     DTL_GetLoadFetCmd, DTL_GetMACLinkCmd)
+from spectracan.can_commands import (LCFCmd_HeartBeat, LCFCmd_GetEnvironment, DTL_GetLoadFetCmd, DTL_GetMACLinkCmd,
+                                     DTL_GetIPAddrCmd, LCFCmd_RunDiagnostic, PMM_DeviceEnableCmd, PMM_DeviceDisableCmd,
+                                     DTL_SetLoadFetCmd)
 
 from spectracan.error import CanTimeoutError, ChannelNotSetUpError
-from spectracan.can_enums import LcfAddress
+from spectracan.can_enums import LcfAddress, DiagnosticId
+from AddressDictionary import AddressDictionary
 
 from pycan.interfaces.kvaser.canlib import CANLIBError
 from spectracan.spectra_listener import SpectraListener
@@ -25,6 +26,8 @@ LISTENING_TIME = 3
 
 # status byte of CAN commands
 GOOD_STATUS = '0'
+
+IGNORED_DEVICES = []
 
 
 class CanBackend:
@@ -61,15 +64,13 @@ class CanBackend:
     def scan(self, channel, frame_callback, listen_time, stop_listener):
         # Set up a SpectraListener with custom frame_callback and timeout_callback
         self.listener = SpectraListener(channel)
-        # TODO: LCR seems to be taking ~3 seconds to respond
-        # TODO: test response times of other devices / set timeout accordingly
         self.listener.start_frame_consumer(frame_callback=frame_callback,
                                            timeout=listen_time,
                                            timeout_callback=stop_listener)
         self.listener.start_timer.set()  # start the timer
 
-        # Scan all the addresses found in LcfAddress
-        for device in CubeAddress:
+        # Scan all the addresses found in AddressDictionary
+        for device in AddressDictionary:
             device_name = device.name
             address = device.value
             if device_name not in IGNORED_DEVICES:
@@ -95,8 +96,8 @@ class CanBackend:
                     self.stop_listener()
                     return
 
-    def get_environment(self, channel, address):
-        command = LCFCmd_GetEnvironment.build_command()
+    def get_environment(self, channel, address, lun=0):
+        command = LCFCmd_GetEnvironment.build_command(lun=lun)
 
         try:
             response_bytes = MsgSender.send_command_sync(channel_num=channel,
@@ -123,6 +124,99 @@ class CanBackend:
             return
         return DTL_GetLoadFetCmd.parse_response(response_bytes)
 
+    def set_dtl_fets(self, channel, address, fets_5v, fets_12v):
+        command = DTL_SetLoadFetCmd.build_command(fets_5v, fets_12v)
+
+        try:
+            MsgSender.send_command_sync(channel_num=channel,
+                                        src=SRC_ADDRESS,
+                                        dest=address,
+                                        command=command,
+                                        timeout=2)
+        except Exception as err:
+            self.logger.info("ERROR: Failed to set DTL FETs: " + str(err))
+            return
+        return True
+
+    def get_dtl_mac(self, channel, address):
+        command = DTL_GetMACLinkCmd.build_command()
+
+        try:
+            response_bytes = MsgSender.send_command_sync(channel_num=channel,
+                                                         src=SRC_ADDRESS,
+                                                         dest=address,
+                                                         command=command,
+                                                         timeout=2)
+        except Exception as err:
+            self.logger.info("ERROR: Failed to get DTL MAC: " + str(err))
+            return
+        return DTL_GetMACLinkCmd.parse_response(response_bytes)
+
+    def get_dtl_ip(self, channel, address):
+        command = DTL_GetIPAddrCmd.build_command()
+
+        try:
+            response_bytes = MsgSender.send_command_sync(channel_num=channel,
+                                                         src=SRC_ADDRESS,
+                                                         dest=address,
+                                                         command=command,
+                                                         timeout=2)
+        except Exception as err:
+            self.logger.info("ERROR: Failed to get DTL IP: " + str(err))
+            return
+        return DTL_GetIPAddrCmd.parse_response(response_bytes)
+
+    def set_pmm_polling(self, poll_state):
+
+        command = LCFCmd_RunDiagnostic.build_command(
+            diagnostic_id=DiagnosticId.DIAG_ID_BUS_SCAN_MODE.value,
+            rsvd=poll_state
+        )
+
+        try:
+            response_bytes = MsgSender.send_command_sync(channel_num=0,
+                                                         src=SRC_ADDRESS,
+                                                         dest=AddressDictionary.PMM.value,
+                                                         command=command,
+                                                         timeout=2)
+        except Exception as err:
+            self.logger.info("ERROR: Failed to set PMM polling: " + str(err))
+            return
+        return LCFCmd_RunDiagnostic.parse_response(response_bytes)
+
+    def set_pmm_device_state(self, channel, address, lun=0, state=True):
+        if state:
+            command = PMM_DeviceEnableCmd.build_command(sub_module=lun)
+        else:
+            command = PMM_DeviceDisableCmd.build_command(sub_module=lun)
+
+        try:
+            MsgSender.send_command_sync(channel_num=channel,
+                                        src=SRC_ADDRESS,
+                                        dest=address,
+                                        command=command,
+                                        timeout=2)
+        except Exception as err:
+            self.logger.info("ERROR: Failed to set PMM device state: " + str(err))
+            return
+        return True
+
+    def set_supply_state(self, lun, state):
+        if state:
+            command = PMM_DeviceEnableCmd.build_command(sub_module=lun)
+        else:
+            command = PMM_DeviceDisableCmd.build_command(sub_module=lun)
+
+        try:
+            MsgSender.send_command_sync(channel_num=0,
+                                        src=SRC_ADDRESS,
+                                        dest=AddressDictionary.PMM.value,
+                                        command=command,
+                                        timeout=2)
+        except Exception as err:
+            self.logger.info("ERROR: Failed to set Supply state: " + str(err))
+            return
+        return True
 
     def shutdown(self):
         ChannelManager.shutdown_channels()
